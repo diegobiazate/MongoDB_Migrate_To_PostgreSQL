@@ -7,11 +7,29 @@ import { closePostgresConnection, connectToPostgres, initializePostgresSchema } 
 async function migrateBulk(db: Db, pgPool: Pool): Promise<{ conversations: number; messages: number }> {
   console.log('Starting bulk migration...');
   const collection = db.collection<Conversation>('conversations');
-  const batchSize = 1000;
+  const batchSize = 5000;
   let totalConversations = 0;
   let totalMessages = 0;
 
   const pgClient = await pgPool.connect();
+
+  const changeStream: ChangeStream<Conversation> = collection.watch([], { fullDocument: 'updateLookup' });
+  try {
+    changeStream.on('change', async (change: any) => {
+    await pgClient.query('BEGIN');
+    if (change.operationType === 'delete' && change.documentKey) {
+      const convId = change.documentKey._id.toString();
+      await pgClient.query(`DELETE FROM messages WHERE conversation_id = $1`, [convId]);
+      await pgClient.query(`DELETE FROM conversations WHERE id = $1`, [convId]);
+      console.log(`Deleted conversation ${convId}`);
+    }
+    await pgClient.query('COMMIT');
+    });
+  } catch (error) {
+    console.error(`Error processing change:`, error);
+    await pgClient.query('ROLLBACK');
+  }
+
   try {
     // Iterar conversas em lotes
     for await (const conversations of collection.find().batchSize(batchSize).stream()) {
@@ -115,6 +133,7 @@ async function migrateBulk(db: Db, pgPool: Pool): Promise<{ conversations: numbe
     throw error;
   } finally {
     pgClient.release();
+    await changeStream.close();
   }
 }
 
@@ -124,7 +143,7 @@ async function syncChanges(db: Db, pgPool: Pool): Promise<void> {
   const changeStream: ChangeStream<Conversation> = collection.watch([], { fullDocument: 'updateLookup' });
 
   try {
-    changeStream.on('change', async (change) => {
+    changeStream.on('change', async (change: any) => {
       const pgClient = await pgPool.connect();
       try {
         await pgClient.query('BEGIN');
@@ -223,7 +242,7 @@ async function validateMigration(db: Db, pgPool: Pool): Promise<void> {
     .collection('conversations')
     .aggregate([{ $unwind: '$messages' }, { $count: 'total' }])
     .toArray()
-    .then(res => res[0]?.total || 0);
+    .then((res: any) => res[0]?.total || 0);
 
   const pgConvCount = (await pgPool.query('SELECT COUNT(*) FROM conversations')).rows[0].count;
   const pgMsgCount = (await pgPool.query('SELECT COUNT(*) FROM messages')).rows[0].count;

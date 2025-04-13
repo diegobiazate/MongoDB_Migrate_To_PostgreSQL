@@ -68,25 +68,42 @@ function generateConversations(count: number): Conversation[] {
 // Função principal de seed
 export async function seedDatabase(
   db: Db,
-  conversationCount: number = 1000
+  conversationCount: number = 1000,
+  batchSize: number = 1000
 ): Promise<void> {
   try {
     const collection = db.collection<Conversation>('conversations');
 
-    // Limpar coleção existente
-    await collection.deleteMany({});
-    console.log('Cleared existing conversations');
+    // // Limpar coleção existente
+    // await collection?.deleteMany({});
+    // console.log('Cleared existing conversations');
 
-    // Gerar e inserir conversas
-    const conversations = generateConversations(conversationCount);
-    await collection.insertMany(conversations, { ordered: false });
-    console.log(`Inserted ${conversations.length} conversations`);
+    let totalInserted = 0;
+    let totalMessages = 0;
 
-    // Relatório
-    const totalMessages = conversations.reduce(
-      (sum, conv) => sum + conv.messages.length,
-      0
-    );
+    // Processar em lotes
+    for (let i = 0; i < conversationCount; i += batchSize) {
+      const currentBatchSize = Math.min(batchSize, conversationCount - i);
+      console.log(`Processing batch ${i / batchSize + 1} of ${Math.ceil(conversationCount / batchSize)}...`);
+
+      // Gerar e inserir conversas do lote atual
+      const conversations = generateConversations(currentBatchSize);
+      await collection.insertMany(conversations, { ordered: false });
+      
+      totalInserted += conversations.length;
+      totalMessages += conversations.reduce((sum, conv) => sum + conv.messages.length, 0);
+
+      // Forçar coleta de lixo
+      if (global.gc) {
+        global.gc();
+      }
+
+      console.log(`Progress: ${totalInserted}/${conversationCount} conversations (${Math.round((totalInserted / conversationCount) * 100)}%)`);
+    }
+
+    // Relatório final
+    console.log(`\nSeed completed successfully!`);
+    console.log(`Total conversations inserted: ${totalInserted}`);
     console.log(`Total messages inserted: ${totalMessages}`);
   } catch (error) {
     console.error('Error seeding database:', error);
@@ -99,7 +116,7 @@ if (require.main === module) {
   (async () => {
     try {
       const { db } = await connectToDatabase();
-      await seedDatabase(db, 50);
+      await seedDatabase(db, 50000, 1000); // Processar em lotes de 1000
     } catch (error) {
       console.error('Seed failed:', error);
     } finally {
